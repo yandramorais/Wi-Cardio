@@ -1,3 +1,9 @@
+"""
+train_lstm.py — Bidirectional LSTM baseline for HR estimation.
+
+Usage:
+    python src/train_lstm.py
+"""
 import json
 import random
 import time
@@ -7,49 +13,56 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-
-from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import mean_absolute_error, r2_score
+from torch.utils.data import DataLoader, TensorDataset
 
+# ── Device ────────────────────────────────────────────────────────────────────
 
-def get_device():
+def get_device() -> torch.device:
     if torch.backends.mps.is_available():
         return torch.device("mps")
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
 
+# ── Config ────────────────────────────────────────────────────────────────────
 DEVICE     = get_device()
 INPUT_DIR  = Path("saida_full")
 OUTPUT_DIR = Path("output/lstm")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-SEED       = 42
-BATCH_SIZE = 64
 
-LSTM_CFG = dict(
-    hidden      = 256,
-    layers      = 2,
-    drop_rnn    = 0.3,
-    drop_reg    = 0.2,
-    epochs      = 250,
-    patience    = 30,
-    lr          = 5e-4,
-    wd          = 1e-5,
-    scheduler   = "plateau",
-)
+SEED          = 42
+BATCH_SIZE    = 64
+EPOCHS        = 250
+LR            = 5e-4
+WEIGHT_DECAY  = 1e-5
+HIDDEN        = 256
+LAYERS        = 2
+DROPOUT_RNN   = 0.3
+DROPOUT_REG   = 0.2
+PATIENCE      = 30
+HUBER_DELTA   = 3.0
+LR_FACTOR     = 0.5
+LR_PATIENCE   = 10
+LR_MIN        = 1e-5
+GRAD_CLIP     = 1.0
 
 
-def set_seed(seed=SEED):
+# ── Reproducibility ───────────────────────────────────────────────────────────
+
+def set_seed(seed: int = SEED) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     if torch.backends.cudnn.is_available():
         torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.benchmark     = False
 
 
-def load_data():
+# ── Data ──────────────────────────────────────────────────────────────────────
+
+def load_data() -> tuple[DataLoader, DataLoader, np.ndarray]:
     X_train = np.load(INPUT_DIR / "X_train.npz")["X"].astype(np.float32)
     X_val   = np.load(INPUT_DIR / "X_val.npz")["X"].astype(np.float32)
     y_train = np.load(INPUT_DIR / "y_train.npy").astype(np.float32)
@@ -66,72 +79,75 @@ def load_data():
     return train_loader, val_loader, y_val
 
 
+# ── Model ─────────────────────────────────────────────────────────────────────
+
 class PulseFiLSTM(nn.Module):
-    def __init__(self, input_dim, cfg):
+    """Bidirectional LSTM baseline — last timestep context, no attention."""
+
+    def __init__(self, input_dim: int, hidden: int = HIDDEN, layers: int = LAYERS) -> None:
         super().__init__()
-        H = cfg["hidden"]
         self.lstm = nn.LSTM(
-            input_dim, H, cfg["layers"],
+            input_dim, hidden, layers,
             batch_first=True,
-            dropout=cfg["drop_rnn"] if cfg["layers"] > 1 else 0,
+            dropout=DROPOUT_RNN if layers > 1 else 0,
             bidirectional=True,
         )
-        h_out = H * 2
         self.regressor = nn.Sequential(
-            nn.Linear(h_out, 128),
+            nn.Linear(hidden * 2, 128),
             nn.ReLU(),
-            nn.Dropout(cfg["drop_reg"]),
+            nn.Dropout(DROPOUT_REG),
             nn.Linear(128, 1),
         )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         out, _ = self.lstm(x)
-        ctx    = out[:, -1, :]
-        return self.regressor(ctx).squeeze(-1)
+        return self.regressor(out[:, -1, :]).squeeze(-1)
 
 
-def train_model(train_loader, val_loader, y_val_true, input_dim):
-    cfg = LSTM_CFG
-    print(f"\n{'='*60}\nTREINANDO: LSTM\n{'='*60}")
+# ── Training loop ─────────────────────────────────────────────────────────────
 
-    set_seed(SEED)
-    model = PulseFiLSTM(input_dim, cfg).to(DEVICE)
+def train() -> None:
+    set_seed()
+    train_loader, val_loader, y_val_true = load_data()
+    input_dim = next(iter(train_loader))[0].shape[2]
 
-    total = sum(p.numel() for p in model.parameters())
-    print(f"  Device: {DEVICE} | Params: {total:,}")
+    model = PulseFiLSTM(input_dim).to(DEVICE)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Device: {DEVICE} | Parameters: {n_params:,}")
 
-    criterion = nn.HuberLoss(delta=3.0)
-    optimizer = optim.AdamW(model.parameters(), lr=cfg["lr"], weight_decay=cfg["wd"])
+    criterion = nn.HuberLoss(delta=HUBER_DELTA)
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=10, min_lr=1e-5)
+        optimizer, mode="min", factor=LR_FACTOR, patience=LR_PATIENCE, min_lr=LR_MIN,
+    )
 
     history          = {"train_loss": [], "val_mae": []}
     best_val_mae     = float("inf")
     patience_counter = 0
-    checkpoint_path  = OUTPUT_DIR / "best_model_lstm.pt"
+    ckpt_path        = OUTPUT_DIR / "best_model_lstm.pt"
     t_start          = time.time()
 
-    for epoch in range(cfg["epochs"]):
+    for epoch in range(EPOCHS):
         model.train()
-        train_loss_sum = 0.0
+        train_loss = 0.0
         for bx, by in train_loader:
             bx, by = bx.to(DEVICE), by.to(DEVICE)
             optimizer.zero_grad()
             loss = criterion(model(bx), by)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
             optimizer.step()
-            train_loss_sum += loss.item()
+            train_loss += loss.item()
 
         model.eval()
-        val_mae_sum = 0.0
+        val_mae = 0.0
         with torch.no_grad():
             for bx, by in val_loader:
                 bx, by = bx.to(DEVICE), by.to(DEVICE)
-                val_mae_sum += nn.L1Loss()(model(bx), by).item()
+                val_mae += nn.L1Loss()(model(bx), by).item()
 
-        train_loss = train_loss_sum / len(train_loader)
-        val_mae    = val_mae_sum   / len(val_loader)
+        train_loss /= len(train_loader)
+        val_mae    /= len(val_loader)
 
         history["train_loss"].append(train_loss)
         history["val_mae"].append(val_mae)
@@ -140,56 +156,44 @@ def train_model(train_loader, val_loader, y_val_true, input_dim):
         if val_mae < best_val_mae:
             best_val_mae     = val_mae
             patience_counter = 0
-            torch.save(model.state_dict(), checkpoint_path)
+            torch.save(model.state_dict(), ckpt_path)
         else:
             patience_counter += 1
 
         if (epoch + 1) % 10 == 0:
-            print(f"  Epoch {epoch+1:03d} | Huber: {train_loss:.4f} | "
-                  f"Val MAE: {val_mae:.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}")
+            print(
+                f"Epoch {epoch+1:03d} | Huber: {train_loss:.4f}"
+                f" | Val MAE: {val_mae:.4f} | LR: {optimizer.param_groups[0]['lr']:.2e}"
+            )
 
-        if patience_counter >= cfg["patience"]:
-            print(f"  Early stopping ép. {epoch+1} | Melhor Val MAE: {best_val_mae:.4f}")
+        if patience_counter >= PATIENCE:
+            print(f"Early stopping at epoch {epoch + 1} | Best val MAE: {best_val_mae:.4f}")
             break
 
-    train_time = time.time() - t_start
+    elapsed = time.time() - t_start
 
-    model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE, weights_only=True))
+    model.load_state_dict(torch.load(ckpt_path, map_location=DEVICE, weights_only=True))
     model.eval()
-
-    preds_all = []
+    preds = []
     with torch.no_grad():
         for bx, _ in val_loader:
-            preds_all.append(model(bx.to(DEVICE)).cpu().numpy())
-    y_val_pred = np.concatenate(preds_all)
+            preds.append(model(bx.to(DEVICE)).cpu().numpy())
+    y_pred = np.concatenate(preds)
 
-    mae_v  = float(mean_absolute_error(y_val_true, y_val_pred))
-    rmse_v = float(np.sqrt(np.mean((y_val_true - y_val_pred) ** 2)))
-    r2_v   = float(r2_score(y_val_true, y_val_pred))
-
-    print(f"\n  MAE: {mae_v:.4f} | RMSE: {rmse_v:.4f} | R²: {r2_v:.4f} | "
-          f"Treino: {train_time:.0f}s")
+    mae  = float(mean_absolute_error(y_val_true, y_pred))
+    rmse = float(np.sqrt(np.mean((y_val_true - y_pred) ** 2)))
+    r2   = float(r2_score(y_val_true, y_pred))
+    print(f"\n── LSTM Results ─────────────────────────")
+    print(f"MAE:  {mae:.4f} BPM")
+    print(f"RMSE: {rmse:.4f} BPM")
+    print(f"R²:   {r2:.4f}")
+    print(f"Time: {elapsed:.0f}s")
 
     history_path = OUTPUT_DIR / "history_lstm.json"
     with open(history_path, "w") as f:
         json.dump({**history, "input_dim": input_dim}, f)
-    print(f"Histórico salvo: {history_path}")
-
-    return history, y_val_true, y_val_pred
-
-
-def main():
-    set_seed(SEED)
-    print(f"Device: {DEVICE}")
-    print(f"LSTM config: hidden={LSTM_CFG['hidden']} layers={LSTM_CFG['layers']} "
-          f"lr={LSTM_CFG['lr']} epochs={LSTM_CFG['epochs']}")
-
-    train_loader, val_loader, y_val_true = load_data()
-    input_dim = next(iter(train_loader))[0].shape[2]
-    print(f"Input dim: {input_dim} | Val samples: {len(y_val_true):,}\n")
-
-    train_model(train_loader, val_loader, y_val_true, input_dim)
+    print(f"History saved: {history_path}")
 
 
 if __name__ == "__main__":
-    main()
+    train()

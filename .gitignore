@@ -10,13 +10,15 @@ participantes_incompletos.csv
 
 # ── Relatórios e análises geradas ────────────────────────────────────────────
 reports_dataset/
+charts_output/
+history_gru.json
+saida_smoke/
 
 # ── Outputs de treinamento ───────────────────────────────────────────────────
-resultado_gru.png
-resultado_lstm.png
-resultado_treinamento*.png
+output/
 *.pt
 *.pth
+*.png
 
 # ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
