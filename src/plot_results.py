@@ -6,6 +6,8 @@ import torch.nn as nn
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 from torch.utils.data import DataLoader, TensorDataset
+from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 
 
 def get_device():
@@ -167,7 +169,6 @@ def chart_mae_per_position(y_true, pos, y_gru, y_lstm):
             color=C_LSTM
         )
 
-    # Valores das médias
     ax.text(
         0.01,
         mean_gru + top*0.018,
@@ -194,15 +195,33 @@ def chart_mae_per_position(y_true, pos, y_gru, y_lstm):
     ax.set_ylabel("MAE (bpm)", fontsize=13)
     ax.tick_params(axis="y", labelsize=12)
 
-    ax.legend(
-        [bars_g, bars_l, line_g, line_l],
-        ["Wi-Cardio", "LSTM", "Wi-Cardio Mean MAE", "LSTM Mean MAE"],
+    legend_handles = [
+    Patch(facecolor=C_GRU, edgecolor=C_GRU),
+    Patch(facecolor=C_LSTM, edgecolor=C_LSTM),
+    Line2D([0], [0], color=C_GRU, lw=1.4, ls="--"),
+    Line2D([0], [0], color=C_LSTM, lw=1.4, ls="--"),
+]
+
+    legend_labels = [
+        "Wi-Cardio",
+        "LSTM",
+        "Wi-Cardio Mean MAE",
+        "LSTM Mean MAE",
+    ]
+
+    leg = ax.legend(
+        legend_handles,
+        legend_labels,
+        loc="upper left",
         frameon=True,
         fontsize=11,
         framealpha=0.9,
-        edgecolor="#cccccc"
+        edgecolor="#cccccc",
     )
 
+    ax.add_artist(leg)
+
+    ax.set_xlim(-0.5, len(pos_ids) - 0.5)
     ax.set_ylim(0, top * 1.25)
 
     fig.subplots_adjust(left=0.08, right=0.98, top=0.95, bottom=0.14)
@@ -282,13 +301,6 @@ def chart_hr_per_position(y_true, pos, y_gru):
     print(f"Salvo: {out}")
     plt.show()
 
-ax.legend(
-    handles=legend_elements,
-    frameon=True,
-    fontsize=11,
-    framealpha=0.9,
-    edgecolor="#cccccc",
-)
 
 
 def chart_hr_time_single(y_true, pos, sub, y_gru):
@@ -387,13 +399,38 @@ def chart_hr_time_single(y_true, pos, sub, y_gru):
     )
 
     ax.tick_params(axis="x", which="major", labelsize=20)
+    C_GT_COLOR = "#D4919B"
+    C_GRU_COLOR = "#6B0000"
+
+    line_gt, = ax.plot(
+        t,
+        gt,
+        color=C_GT_COLOR,
+        linestyle="-",
+        linewidth=2.5,
+        marker="o",
+        markersize=5,
+    )
+
+    line_gru, = ax.plot(
+        t,
+        gru,
+        color=C_GRU_COLOR,
+        linestyle="--",
+        linewidth=2.5,
+        marker="o",
+        markersize=5,
+    )
+
+    line_gt.set_label("Smartwatch (Ground Truth)")
+    line_gru.set_label("Wi-Cardio (Predicted)")
 
     ax.legend(
+        handles=[line_gt, line_gru],
         frameon=True,
         fontsize=20,
         framealpha=0.9,
         edgecolor="#cccccc",
-        loc="best"
     )
 
     fig.subplots_adjust(
