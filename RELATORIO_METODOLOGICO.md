@@ -2,7 +2,7 @@
 
 > **Relatório Metodológico Completo**  
 > Versão: 1.3 · Data: 2026-06-10  
-> Projeto: `frequencia_csi`
+> Projeto: `Wi-Cardio`
 
 ---
 
