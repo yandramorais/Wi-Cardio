@@ -6,7 +6,7 @@ Data_DS2_smartwatch-main/
 
 # ── Dados processados / splits ───────────────────────────────────────────────
 saida_full/
-sainda_smoke/
+saida_smoke/
 participantes_incompletos.csv
 
 # ── Relatórios e análises geradas ────────────────────────────────────────────
